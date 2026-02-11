@@ -3,7 +3,7 @@ Contributors: slaFFik, jaredatch, smub
 Tags: intranet, extranet, private, redirect, privacy
 Requires at least: 5.5
 Requires PHP: 7.0
-Tested up to: 6.6
+Tested up to: 6.7
 Stable tag: 1.8.0
 License: GPL-3.0-or-later
 
