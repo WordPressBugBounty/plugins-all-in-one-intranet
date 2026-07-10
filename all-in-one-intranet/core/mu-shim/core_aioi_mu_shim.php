@@ -143,9 +143,9 @@ class core_aioi_mu_shim {
 		// rename stays on one filesystem. Concurrent requests right after a
 		// plugin update must not share one temp path and rename a half-written
 		// file into place: MU plugins load on every request, so a truncated
-		// drop-in would fatal the whole site. The PID plus uniqid() stays
+		// drop-in would fatal the whole site. wp_rand() plus uniqid() stays
 		// distinct across separate processes and threads of one process alike.
-		$tmp = $dst . '.' . getmypid() . '-' . uniqid( '', true ) . '.tmp';
+		$tmp = $dst . '.' . wp_rand() . '-' . uniqid( '', true ) . '.tmp';
 
 		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 		if ( ! @copy( $src, $tmp ) ) {

@@ -4,7 +4,7 @@ Tags: intranet, private-site, login, restrict-access, private
 Requires at least: 5.5
 Requires PHP: 7.0
 Tested up to: 7.0
-Stable tag: 1.9.0
+Stable tag: 1.9.1
 License: GPL-3.0-or-later
 
 Turn WordPress into a private intranet in one click. Restrict access to logged-in members, with auto-logout and login redirect.
@@ -277,6 +277,9 @@ If you cannot install from the WordPress plugins directory for any reason, and n
 1. Go to 'All-In-One Intranet' under Settings in your WordPress admin area to configure the plugin
 
 == Changelog ==
+
+= 1.9.1 =
+* Fixed: Fatal error "Call to undefined function getmypid()" on hosts where the PHP `getmypid()` function is disabled.
 
 = 1.9.0 =
 * Changed: Compatibility with WordPress 7.0.
