@@ -1,21 +1,22 @@
 === Intranet & Private Site - All-In-One Intranet ===
 Contributors: slaFFik, jaredatch, smub
-Tags: intranet, private-site, login, restrict-access, private
+Tags: intranet, private site, auto logout, restrict access, multisite
 Requires at least: 5.5
 Requires PHP: 7.0
 Tested up to: 7.0
-Stable tag: 1.9.1
+Stable tag: 1.9.2
 License: GPL-3.0-or-later
+License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
-Turn WordPress into a private intranet in one click. Restrict access to logged-in members, with auto-logout and login redirect.
+Turn WordPress into a private intranet in one click. Restrict access to logged-in members, with auto-logout and login redirect, also on multisite.
 
 == Description ==
 
-WordPress is one of the most popular platforms for building corporate intranets and private company websites. The problem is that WordPress was designed for public-facing sites. Making it work as a private intranet typically requires installing multiple plugins, configuring each one separately, and hoping they all play nicely together.
+Plenty of companies run their intranet on WordPress. The problem is that WordPress was built for public-facing sites. Making it work as a private intranet typically requires installing multiple plugins, configuring each one separately, and hoping they all play nicely together.
 
 All-In-One Intranet solves this by giving you everything you need in a single plugin to turn your WordPress site into a fully private intranet. Enable privacy with one checkbox, set up auto-logout to protect sensitive information, configure where users land after login, and manage multisite access controls - all from one settings page.
 
-Whether you are building a corporate intranet, a private knowledge base, a restricted client portal, or an internal communications hub, this plugin handles the foundational privacy and access control so you can focus on your content.
+Corporate intranet, private knowledge base, restricted client portal, internal comms hub: the privacy and access control are the same job in each case, and this plugin does that part.
 
 = What is an Intranet? =
 
@@ -30,11 +31,11 @@ Common uses for a WordPress intranet include:
 * HR portals for onboarding and training materials
 * Client portals with restricted access to project files
 
-WordPress is well suited for all of these because of its familiar editing interface, extensive plugin ecosystem, and flexible user role system. All-In-One Intranet provides the access control layer that makes it all work.
+WordPress already has the editing interface and the user roles for all of these. What it does not have is the access control layer, which is what All-In-One Intranet adds.
 
 = Features =
 
-All-In-One Intranet includes five core features designed to cover the most common intranet requirements:
+All-In-One Intranet has five features, covering what most intranets need:
 
 = One-Click Private Site =
 
@@ -70,7 +71,7 @@ By default, WordPress sends users to the dashboard after they log in. For an int
 
 The login redirect feature lets you set any URL on your site as the post-login landing page. Point it to your company homepage, a news feed, or a team dashboard so users see relevant content right away.
 
-This redirect only applies when users log in directly through the standard WordPress login page. If a user tries to access a specific page and gets redirected to log in first, they will be sent back to that page after authentication - not to the custom redirect URL. This keeps the user experience smooth.
+This redirect only applies when users log in directly through the standard WordPress login page. If a user tries to access a specific page and gets redirected to log in first, they will be sent back to that page after authentication, not to the custom redirect URL.
 
 = Multisite Sub-site Privacy =
 
@@ -78,7 +79,7 @@ If you run a WordPress multisite network, you can require logged-in users to be 
 
 When a user who is logged in but not a member of the current sub-site tries to access it, they see a message listing all the sub-sites they do have access to, with clickable links to navigate there. Access to the Network Admin area is never restricted by this setting.
 
-This option works in combination with the main privacy setting. Enable private site first, then enable sub-site membership requirements for granular access control across your network.
+This option works in combination with the main privacy setting. Enable private site first, then add sub-site membership requirements for per-site access control across your network.
 
 = Multisite Default Role Assignment =
 
@@ -89,7 +90,7 @@ The default role assignment feature automates this. Choose a role (Subscriber, E
 * When a **new user** is created, they are automatically added to every active sub-site in the network with the selected role
 * When a **new sub-site** is created, all existing users are automatically added to it with the selected role
 
-This saves significant administration time, especially for growing organizations where new employees and new sites are added regularly.
+That saves a lot of clicking, especially in an organization where new employees and new sites turn up regularly.
 
 = How to Make Your WordPress Site Private =
 
@@ -171,6 +172,26 @@ This filter runs during both the template redirect check and the REST API dispat
 
 This is useful for exposing specific landing pages, webhook endpoints, or custom API routes while keeping the rest of the site private.
 
+Two more filters exist for login-screen plugins. Two-factor, passkey, and login-interstitial plugins finish their authentication exchange while the visitor is still logged out, so those specific requests must not be sent to the login wall.
+
+`aioi_public_actions` controls which `admin-ajax.php` / `admin-post.php` actions may still run while the site is private. The bundled list covers Wordfence, WP 2FA passkeys, miniOrange 2-Factor, Solid Security, AIO Login's passwordless codes, Limit Login Attempts Reloaded's email second factor, and Login With Ajax passkey login:
+
+`add_filter( 'aioi_public_actions', function( $actions ) {
+    $actions[] = 'my_plugin_login_challenge';
+    return $actions;
+} );`
+
+`aioi_public_rest_routes` does the same for plugins that verify the second factor over the REST API instead. An entry matches the request route exactly, or as a path segment prefix of it. The bundled list covers WP 2FA's code verification and Limit Login Attempts Reloaded's code delivery:
+
+`add_filter( 'aioi_public_rest_routes', function( $routes ) {
+    $routes[] = '/my-plugin/v1/login/verify';
+    return $routes;
+} );`
+
+Every bundled entry is tied to the plugin it belongs to and only applies while that plugin is active, so a private site never leaves an endpoint open for a plugin it does not run. A renamed build, or a copy loaded as a must-use plugin, is not recognized: add its action or route with the filters above.
+
+Only add authentication endpoints to either list. Anything on them can be called by logged-out visitors, so it must not return site content, and it must do its own credential or token check. Be careful with plugins that funnel every one of their endpoints through a single generic action or route - allowing that one name reopens all of them, which is why Shield Security's `shield_action` router is not on the bundled list even though its 2FA uses it.
+
 = Google Workspace Integration =
 
 If your organization uses Google Workspace (formerly Google Apps), two companion plugins extend your intranet:
@@ -243,6 +264,16 @@ Yes. When the private site option is active, the plugin completely disables XML-
 
 The plugin uses WordPress's built-in `auth_redirect()` function to send unauthenticated users to the login page. Most custom login page plugins work by intercepting the standard login URL and redirecting to a custom page. Because All-In-One Intranet relies on standard WordPress authentication functions, it is generally compatible with custom login page plugins. The login redirect feature also works regardless of whether the user logs in through the default or a custom login page.
 
+= Is it compatible with two-factor authentication plugins? =
+
+Yes. Some 2FA plugins complete part of the login exchange with a background request from the login screen, which happens before the visitor is logged in. Those requests are recognized and let through, so the second-factor prompt appears and login can finish. Wordfence, WP 2FA, miniOrange 2-Factor, Solid Security, AIO Login, Limit Login Attempts Reloaded and Login With Ajax passkey login are covered out of the box. Login With Ajax's own AJAX login form is not - that form lives on a front-end page, which is behind the login wall on a private site anyway. Plugins that keep the whole flow on the login page itself, such as Two-Factor, CleanTalk Security and Google Authenticator, need nothing special.
+
+Account recovery links are treated differently from login. A link that switches off a user's second factor is not needed to finish a login, so it stays behind the login wall even when the rest of that plugin is supported - miniOrange's emailed 2FA reset link is the current example. Ask an administrator to clear the second factor, or open that one endpoint yourself with the `aioi_allow_public_access` filter.
+
+Shield Security is the exception: its 2FA step shares one general-purpose endpoint with the rest of the plugin, so opening it would also open everything else behind that endpoint. If you use Shield's 2FA on a private site, add `shield_action` yourself with the `aioi_public_actions` filter described in the Description tab.
+
+If any other 2FA plugin reports a generic authentication error at login on a private site, its background request is being sent to the login wall. Developers can allow it with the `aioi_public_actions` or `aioi_public_rest_routes` filter, also in the Description tab.
+
 = How is this different from a membership plugin? =
 
 Membership plugins are built to sell access - they manage subscription levels, process payments, and drip-feed content to paying customers. All-In-One Intranet is built for internal, private sites where everyone who logs in is already a trusted member of your organization. It locks the entire site down to logged-in users in one click instead of gating individual posts behind a purchase or subscription tier. If you need to charge for access, use a membership plugin; if you need a private company intranet, this is the simpler fit.
@@ -278,6 +309,12 @@ If you cannot install from the WordPress plugins directory for any reason, and n
 
 == Changelog ==
 
+= 1.9.2 =
+* Fixed: Nobody could log in to a "Force private" site while a two-factor authentication plugin such as Wordfence was active.
+* Fixed: On multisite, creating a sub-site logged a WordPress deprecation notice.
+* Fixed: On multisite with a default sub-site role set, the creator of a new sub-site was demoted from administrator to that role.
+* Fixed: With auto-logout enabled, users could be logged out again the moment they passed a two-factor check if it took them too long to enter their OTP code.
+
 = 1.9.1 =
 * Fixed: Fatal error "Call to undefined function getmypid()" on hosts where the PHP `getmypid()` function is disabled.
 
@@ -292,7 +329,7 @@ If you cannot install from the WordPress plugins directory for any reason, and n
 * Fixed: Closed an access-control bypass on "Force private" sites where unauthenticated visitors could post comments and trackbacks to protected posts via `wp-comments-post.php` and `wp-trackback.php`.
 * Fixed: Closed a content-leak on single-site (and non-network-activated multisite) "Force private" installs where unauthenticated visitors could read RSS feeds and REST API output through `/wp-activate.php` (for example `?feed=rss2`, `?p=N&feed=comments-rss2`, or `?rest_route=/wp/v2/posts`). WordPress core skips loading regular plugins on `wp-activate.php` because of `WP_INSTALLING`, so the gate is now enforced from a must-use companion file.
 * Fixed: Closed a content-leak on "Force private" sites where unauthenticated visitors could read the site's blogroll (the OPML links export), title, and WordPress version through `/wp-links-opml.php`, which loads WordPress without firing the normal page-render auth gate.
-* Fixed: Closed an access-control bypass on "Force private" sites where unauthenticated visitors could reach the AJAX and form-handler endpoints (`/wp-admin/admin-ajax.php` and `/wp-admin/admin-post.php`). WordPress treats these as admin requests, so the normal page-render auth gate did not apply to them — any public ("nopriv") action registered by the active theme or another plugin would run for logged-out visitors even though the site is private, potentially exposing data or triggering actions that should require a login. Both endpoints now require a valid login.
+* Fixed: Closed an access-control bypass on "Force private" sites where unauthenticated visitors could reach the AJAX and form-handler endpoints (`/wp-admin/admin-ajax.php` and `/wp-admin/admin-post.php`). WordPress treats these as admin requests, so the normal page-render auth gate did not apply to them. Any public ("nopriv") action registered by the active theme or another plugin would run for logged-out visitors even though the site is private, potentially exposing data or triggering actions that should require a login. Both endpoints now require a valid login.
 * Fixed: On "Force private" sites the REST API and comment/trackback gates now apply the same role and sub-site-membership checks as the rest of the site, so a logged-in user with no role (or who is not a member of the current sub-site) can no longer read REST API content or post comments that they would otherwise be blocked from.
 * Fixed: Additional "Force private" hardening: the inactivity auto-logout now bounces through a host-validated safe redirect instead of trusting the `Host` header, the network settings save now performs an explicit capability check, and the default sub-site member role is validated against the registered roles when saved.
 * Fixed: Minor robustness and standards fixes: the private-site `robots.txt` now includes a `User-agent: *` line, the plugin's PHP files guard against direct access, and corrected an internationalization issue in a registration warning notice.
@@ -302,8 +339,8 @@ If you cannot install from the WordPress plugins directory for any reason, and n
 * Fixed: Made sure the XMLRPC is also safeguarded against unauthorized access.
 
 = 1.8.0 =
-* IMPORTANT: The minimum WordPress version is now WordPress v5.5.
-* IMPORTANT: The minimum PHP version is now PHP v7.0.
+* IMPORTANT: The minimum WordPress version is now WordPress 5.5.
+* IMPORTANT: The minimum PHP version is now PHP 7.0.
 * Added: Multisite-specific options: "Require logged-in users to be members of a sub-site to view it".
 * Added: "Sub-site Membership" - assign a user role for newly added users.
 * Changed: Compatibility with WordPress 6.6.
@@ -317,7 +354,7 @@ If you cannot install from the WordPress plugins directory for any reason, and n
 * Security update and added WordPress 5.6 compatibility.
 
 = 1.6 =
-* Security update and added WordPress 5.4.1 compatibility.
+* Security update and added WordPress 5.4 compatibility.
 
 = 1.5 =
 * Ready for WP 4.9. Disables unauthenticated calls to WP REST API by default.
