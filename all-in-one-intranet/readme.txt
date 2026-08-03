@@ -4,7 +4,7 @@ Tags: intranet, private site, auto logout, restrict access, multisite
 Requires at least: 5.5
 Requires PHP: 7.0
 Tested up to: 7.0
-Stable tag: 1.9.2
+Stable tag: 1.10.0
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -50,7 +50,7 @@ This single setting handles multiple layers of privacy at once:
 * **Pingback suppression** - outgoing pingbacks and trackbacks are disabled so your private site does not announce itself to external services
 * **Feed protection** - RSS, Atom, and comment feeds require authentication, so protected posts and comments cannot be read through `/feed/` or crafted feed URLs
 * **Comment and trackback blocking** - unauthenticated visitors cannot post comments or trackbacks to protected content through `wp-comments-post.php` or `wp-trackback.php`
-* **Admin endpoint gating** - the `admin-ajax.php` and `admin-post.php` handlers require a valid login, so public "nopriv" actions registered by your theme or other plugins do not run for logged-out visitors
+* **Admin endpoint gating** - the `admin-ajax.php` and `admin-post.php` handlers require a valid login, so public "nopriv" actions registered by your theme or other plugins do not run for logged-out visitors. A short allowlist keeps the handlers people need *before* they are logged in working: two-factor and passkey plugins, connected site-management platforms, and WordPress's own password suggestion on the reset-password screen
 * **Entry-point coverage** - WordPress files that load the site outside the normal page render, such as `wp-links-opml.php` (the blogroll and OPML export) and `wp-activate.php`, are sealed so they cannot leak post content, feeds, your site title, or the WordPress version number
 * **Slug enumeration prevention** - WordPress's canonical redirect no longer reveals the slugs of private posts to unauthenticated visitors on pretty permalinks
 * **Role and membership enforcement** - the REST API and comment gates apply the same role and sub-site membership checks as the rest of the site, so a logged-in user with no role, or who is not a member of the current sub-site, cannot read API content or post comments they would otherwise be blocked from
@@ -61,9 +61,11 @@ The plugin also monitors your WordPress registration settings. If "Anyone can re
 
 Shared workstations and forgotten browser tabs are a real security risk for intranets. The auto-logout feature lets you set a maximum idle time - in minutes, hours, or days - after which users are automatically logged out.
 
-The plugin tracks each user's last activity timestamp. On every page load, it checks whether the configured idle time has been exceeded. If a user has been inactive for too long, they are logged out immediately and redirected back to the page they were viewing, which triggers the login wall if the site is private.
+The plugin tracks when each browser session was last active. On every page load, it checks whether the configured idle time has been exceeded. If a session has been idle for too long, the user is logged out immediately and redirected back to the page they were viewing, which triggers the login wall if the site is private. Each session keeps its own timer, so staying active at your desk does not keep a forgotten login on a shared machine alive.
 
 This protects sensitive company information without requiring users to remember to log out manually. Set it to 30 minutes for high-security environments, a few hours for typical office use, or leave it blank to disable the feature entirely.
+
+Auto-logout counts browser sessions only. Requests that authenticate without a login cookie - a site management dashboard calling in over its own API, or a script using an application password - have no session to expire, so they are left alone and they never stand in for a person's own activity.
 
 = Custom Login Redirect =
 
@@ -115,7 +117,7 @@ The auto-logout feature protects your intranet from unattended browser sessions:
 4. Select the time unit from the dropdown: **Minutes**, **Hours**, or **Days**
 5. Click **Save Changes**
 
-Users who are inactive for longer than the configured period will be logged out on their next page interaction. Their activity timer resets on every page load, so active users are never interrupted.
+Users who are inactive for longer than the configured period will be logged out on their next page interaction. Their activity timer resets on every page load, so active users are never interrupted. The timer belongs to the browser session, so being active in one browser does not keep the same account signed in on another machine.
 
 To disable auto-logout, clear the time field and save.
 
@@ -174,14 +176,14 @@ This is useful for exposing specific landing pages, webhook endpoints, or custom
 
 Two more filters exist for login-screen plugins. Two-factor, passkey, and login-interstitial plugins finish their authentication exchange while the visitor is still logged out, so those specific requests must not be sent to the login wall.
 
-`aioi_public_actions` controls which `admin-ajax.php` / `admin-post.php` actions may still run while the site is private. The bundled list covers Wordfence, WP 2FA passkeys, miniOrange 2-Factor, Solid Security, AIO Login's passwordless codes, Limit Login Attempts Reloaded's email second factor, and Login With Ajax passkey login:
+`aioi_public_actions` controls which `admin-ajax.php` / `admin-post.php` actions may still run while the site is private. The bundled list covers Wordfence, WP 2FA passkeys, miniOrange 2-Factor, Solid Security, AIO Login's passwordless codes, Limit Login Attempts Reloaded's email second factor, Login With Ajax passkey login, and - on a different footing, see below - WP Remote's own callback action:
 
 `add_filter( 'aioi_public_actions', function( $actions ) {
     $actions[] = 'my_plugin_login_challenge';
     return $actions;
 } );`
 
-`aioi_public_rest_routes` does the same for plugins that verify the second factor over the REST API instead. An entry matches the request route exactly, or as a path segment prefix of it. The bundled list covers WP 2FA's code verification and Limit Login Attempts Reloaded's code delivery:
+`aioi_public_rest_routes` does the same for plugins that verify the second factor over the REST API instead. An entry matches the request route exactly, or as a path segment prefix of it. The bundled list covers WP 2FA's code verification, Limit Login Attempts Reloaded's code delivery, and - on a different footing, see below - WP Umbrella's own API namespace:
 
 `add_filter( 'aioi_public_rest_routes', function( $routes ) {
     $routes[] = '/my-plugin/v1/login/verify';
@@ -191,6 +193,35 @@ Two more filters exist for login-screen plugins. Two-factor, passkey, and login-
 Every bundled entry is tied to the plugin it belongs to and only applies while that plugin is active, so a private site never leaves an endpoint open for a plugin it does not run. A renamed build, or a copy loaded as a must-use plugin, is not recognized: add its action or route with the filters above.
 
 Only add authentication endpoints to either list. Anything on them can be called by logged-out visitors, so it must not return site content, and it must do its own credential or token check. Be careful with plugins that funnel every one of their endpoints through a single generic action or route - allowing that one name reopens all of them, which is why Shield Security's `shield_action` router is not on the bundled list even though its 2FA uses it.
+
+Site-management platforms are the one deliberate exception to "must not return site content", because returning it is their whole purpose. They are bundled separately and every entry carries an extra condition, so no endpoint is ever opened unconditionally: WP Umbrella's REST namespace opens only for a request presenting its credentials, its `admin-ajax.php` self-calls only for a request carrying the nonce those handlers expect, and WP Remote's `admin-ajax.php` action only once WP Remote has verified the caller's signature and registered its own handler.
+
+Be clear about what each condition proves. WP Remote's is proof of authentication: the handler exists only because the signature check already passed. The other two check the shape of the request instead, because neither value can be validated at the gate - a platform's token is only meaningful to the platform, and the nonce on a self-call is minted for the administrator the platform acts as, while the gate sees an anonymous request. So a request carrying an invented token or nonce is not stopped by the login wall; it reaches the platform and is rejected there. That is the trade the exemption makes: it hands the decision to code that can actually make it, and keeps requests that do not even claim a credential away from those endpoints. Those two are the only entries that need this today.
+
+If you maintain a management plugin and want the same treatment, open its routes with `aioi_public_rest_routes` or its action with `aioi_public_actions`. Neither filter carries a condition of its own, so whatever you add must be safe to reach unauthenticated and must authorize itself.
+
+= Site Management Dashboard Compatibility =
+
+Plenty of intranets are looked after from a central dashboard that handles updates and backups across every site an agency or IT team runs. Making a site private should not cut it off from the dashboard that maintains it, so these five connector plugins are supported out of the box, with nothing to configure:
+
+* **[ManageWP Worker](https://wordpress.org/plugins/worker/)** - also the connector used by GoDaddy Pro
+* **[MainWP Child](https://wordpress.org/plugins/mainwp-child/)**
+* **[InfiniteWP Client](https://wordpress.org/plugins/iwp-client/)**
+* **[WP Umbrella](https://wordpress.org/plugins/wp-health/)**
+* **[WP Remote](https://wordpress.org/plugins/wpremote/)**
+
+Each of these talks to its dashboard over its own signed protocol rather than a browser login. Site syncing, plugin and theme updates, backups, and the dashboard's one-click login into wp-admin all keep working with "Force site to be entirely private" enabled.
+
+ManageWP, MainWP and InfiniteWP answer their dashboard from their own hooks, before the privacy gate runs, so nothing needs to be opened for them. The other two each need one narrow exemption, and both are granted only to a request the platform itself has already vouched for:
+
+* WP Umbrella works entirely through the WordPress REST API, which a private site otherwise closes, so its own namespace is exempted - but only for a request that presents WP Umbrella's credentials. While answering some of those calls it also posts back to its own site through `admin-ajax.php`; those actions are exempted for requests that carry the accompanying nonce, which WP Umbrella checks itself.
+* WP Remote answers most calls from its own plugin file, but routes some of them through `admin-ajax.php`, which a private site also closes. That one action is exempted, and only once WP Remote has verified the caller's signature and registered its handler.
+
+In both cases a request that carries nothing at all still meets the login wall, and one that does carry a token, nonce or signature still has to satisfy the platform's own checks before it is answered. Nothing else about the site opens up: every other route, action and page stays private.
+
+Auto-logout handles those background calls too. Nobody is sitting at a browser, so a dashboard request is never logged out in the middle of an API call, and it does not count as the connected administrator's own activity - a dashboard polling your site every few minutes cannot hold a real person's session open past the idle limit you set.
+
+A private site does still hide anything the service fetches anonymously from its own servers: uptime monitoring, broken-link checking, and SEO or page-speed scans. Those requests carry no login, so they get the login redirect and the dashboard will usually report the site as down or its links as broken. That applies to every external service, not only these five.
 
 = Google Workspace Integration =
 
@@ -219,11 +250,13 @@ No. Media files (images, PDFs, videos, etc.) that are uploaded through WordPress
 
 = Does it block the WordPress REST API? =
 
-Yes. When the private site option is enabled, all unauthenticated REST API requests receive a 401 error response. This prevents external tools, scripts, or bots from accessing your content through API endpoints like `/wp-json/wp/v2/posts`. Authenticated requests from logged-in users continue to work normally.
+Yes. When the private site option is enabled, unauthenticated REST API requests receive a 401 error response. This prevents external tools, scripts, or bots from accessing your content through API endpoints like `/wp-json/wp/v2/posts`. Authenticated requests from logged-in users continue to work normally. Two narrow sets of routes are exempt, and only while the plugin providing them is active: the endpoints two-factor and passkey plugins use to finish a login, and a site management platform's own API namespace for a request presenting that platform's credentials. See "Developer Filters" above for the reasoning and how to adjust either list.
 
 = How does auto-logout work? =
 
-The plugin records a timestamp each time a logged-in user loads a page. On the next page load, it compares the current time against the stored timestamp. If the difference exceeds the configured idle time, the user is logged out immediately. The idle timer resets on every page load, so users who are actively browsing are never interrupted. You can set the timeout in minutes, hours, or days.
+The plugin records a timestamp on the browser session each time a logged-in user loads a page. On the next page load, it compares the current time against that session's timestamp. If the difference exceeds the configured idle time, the user is logged out immediately. The idle timer resets on every page load, so users who are actively browsing are never interrupted, and each browser session keeps its own timer, so staying signed in at your desk does not keep a forgotten login on a shared machine alive. You can set the timeout in minutes, hours, or days.
+
+Only browser sessions are subject to it. A request that authenticates without a login cookie - a site management dashboard using its own API, or a script using an application password - has no session to expire, so it is left running and it does not reset anybody's idle timer.
 
 = Can I set a custom page for users to see after login? =
 
@@ -274,6 +307,16 @@ Shield Security is the exception: its 2FA step shares one general-purpose endpoi
 
 If any other 2FA plugin reports a generic authentication error at login on a private site, its background request is being sent to the login wall. Developers can allow it with the `aioi_public_actions` or `aioi_public_rest_routes` filter, also in the Description tab.
 
+= Is it compatible with ManageWP, MainWP, InfiniteWP, WP Umbrella, or WP Remote? =
+
+Yes, all five, on a private site, with nothing to configure: ManageWP Worker (the same connector GoDaddy Pro uses), MainWP Child, InfiniteWP Client, WP Umbrella and WP Remote. Their dashboard requests are signed with their own keys instead of relying on a browser login, so site syncing, plugin and theme updates, backups, and the dashboard's one-click login into wp-admin keep working with "Force site to be entirely private" enabled.
+
+ManageWP, MainWP and InfiniteWP are answered from their own hooks before the privacy gate runs, so they need no exemption at all. WP Umbrella works through the WordPress REST API and WP Remote routes part of its traffic through `admin-ajax.php` - both of which a private site closes to unauthenticated callers - so each gets one narrow exemption while its plugin is installed. Neither is a blanket hole: WP Umbrella's namespace opens only for a request that presents its credentials, and WP Remote's action only once WP Remote has verified the caller's signature itself. An anonymous request to either endpoint is still sent to the login wall, and a credentialed one still has to pass the platform's own checks. The exemption hands the decision to the platform rather than removing it.
+
+Auto-logout understands these requests as well. A dashboard poll is never logged out in the middle of an API call, and it does not count as the connected administrator's own activity, so it cannot keep a real person signed in past the idle limit you configured.
+
+The parts that cannot work on a private site are the ones that fetch your pages anonymously from the vendor's servers: uptime monitoring, broken-link checking, and SEO or page-speed scans. Those requests carry no login, so they receive the login redirect and the service will usually report the site as down or its links as broken. Switch those particular monitors off for private sites - there is no way to satisfy them and stay private.
+
 = How is this different from a membership plugin? =
 
 Membership plugins are built to sell access - they manage subscription levels, process payments, and drip-feed content to paying customers. All-In-One Intranet is built for internal, private sites where everyone who logs in is already a trusted member of your organization. It locks the entire site down to logged-in users in one click instead of gating individual posts behind a purchase or subscription tier. If you need to charge for access, use a membership plugin; if you need a private company intranet, this is the simpler fit.
@@ -284,7 +327,7 @@ Yes. All-In-One Intranet works at the authentication layer and does not change h
 
 = Will it slow down my site? =
 
-No noticeable impact. The privacy check runs early on each request and is a simple logged-in or logged-out test, and the auto-logout feature reads and writes a single user meta value per page load. There are no external calls and no heavy database queries involved.
+No noticeable impact. The privacy check runs early on each request and is a simple logged-in or logged-out test, and the auto-logout feature reads and updates a single session record per page load. There are no external calls and no heavy database queries involved.
 
 = Can I keep my custom-branded login page? =
 
@@ -308,6 +351,16 @@ If you cannot install from the WordPress plugins directory for any reason, and n
 1. Go to 'All-In-One Intranet' under Settings in your WordPress admin area to configure the plugin
 
 == Changelog ==
+
+= 1.10.0 =
+* Added: Compatibility with site management platforms: ManageWP (also GoDaddy Pro), MainWP, InfiniteWP, WP Umbrella and WP Remote.
+* Changed: Auto-logout now applies only to browser sessions. A request that authenticates without a login cookie has no session to expire, so it is left alone and no longer resets anybody's idle timer.
+* Fixed: ManageWP - with auto-logout enabled, the Worker connector stopped answering its dashboard altogether, and its one-click login into wp-admin could log you straight back out.
+* Fixed: ManageWP, MainWP and InfiniteWP - with auto-logout enabled, a connected dashboard kept resetting the idle timer of the administrator account it signs in as, so that person was never logged out for inactivity.
+* Fixed: WP Umbrella - it could not reach a "Force private" site at all, because it works entirely through the REST API and met the private-site 401 before it could authenticate. Its own API namespace and the `admin-ajax.php` calls it makes to itself are now allowed through while it is installed.
+* Fixed: WP Remote - it lost the part of its dashboard traffic that goes through `admin-ajax.php` on a "Force private" site. That one action is now allowed through, once WP Remote has authenticated the caller.
+* Fixed: With auto-logout enabled, activity in one browser kept every other login of the same account signed in. Each browser session now keeps its own idle timer.
+* Fixed: On a "Force private" site running WordPress 7.0, resetting a password failed at the last step with "Your password reset link appears to be invalid".
 
 = 1.9.2 =
 * Fixed: Nobody could log in to a "Force private" site while a two-factor authentication plugin such as Wordfence was active.

@@ -71,13 +71,12 @@ class core_all_in_one_intranet {
 
 		add_filter( 'login_redirect', [ $this, 'aioi_login_redirect' ], 10, 3 );
 
-		add_action( 'wp_login', [ $this, 'aioi_wp_login' ], 10, 2 );
-
-		// 'wp_login' only fires from wp_signon(), while two-factor and SSO plugins
-		// call wp_set_auth_cookie() directly for their own second step. This action
-		// fires on every path, so the clock never stays on the password step.
-		add_action( 'set_logged_in_cookie', [ $this, 'aioi_set_logged_in_cookie' ], 10, 4 );
-
+		// No hook starts the auto-logout clock on login. WordPress already stamps
+		// every session it creates with the moment it began, and aioi_check_activity()
+		// reads that. Hooking 'wp_login' or 'set_logged_in_cookie' instead would both
+		// miss logins issued before this plugin loads and, worse, restart the clock on
+		// a person's behalf whenever a management plugin re-authenticates them from a
+		// machine request, which holds their session open for as long as it polls.
 		add_action( 'init', [ $this, 'aioi_check_activity' ], 1 );
 
 		// wp-links-opml.php require()s wp-load.php and prints the blogroll without
@@ -191,6 +190,16 @@ class core_all_in_one_intranet {
 
 		// We do want a private site.
 		if ( ! is_user_logged_in() ) {
+			// Browsers fetch this unprompted, and on WordPress 7.0 a redirect to the login
+			// screen expires the visitor's pending password-reset cookie. Headers only,
+			// since the caller is an image fetch. Matched on the path rather than
+			// is_favicon(), which is false where permalinks are plain.
+			if ( $request_path === '/favicon.ico' ) {
+				status_header( 404 );
+				nocache_headers();
+				exit;
+			}
+
 			auth_redirect();
 			exit;
 		}
@@ -201,7 +210,9 @@ class core_all_in_one_intranet {
 			// Restrict access to logged-in users with no role.
 			wp_logout();
 			wp_die(
-				'<p>' . esc_html__( 'You attempted to login to the site, but you do not have any permissions. If you believe you should have access, please contact your administrator.', 'all-in-one-intranet' ) . '</p>'
+				'<p>' . esc_html__( 'You attempted to login to the site, but you do not have any permissions. If you believe you should have access, please contact your administrator.', 'all-in-one-intranet' ) . '</p>',
+				'',
+				[ 'response' => 403 ]
 			);
 		}
 	}
@@ -293,8 +304,9 @@ class core_all_in_one_intranet {
 			$output .= '</table>';
 		}
 
+		// Explicit 403: wp_die() defaults to 500, which monitors read as an outage.
 		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
-		wp_die( $output );
+		wp_die( $output, '', [ 'response' => 403 ] );
 	}
 
 	/**
@@ -425,10 +437,18 @@ class core_all_in_one_intranet {
 		}
 
 		if ( ! is_user_logged_in() ) {
-			return new WP_Error( 'not-logged-in', 'REST API Requests must be authenticated because All-In-One Intranet is active', [ 'status' => 401 ] );
+			return new WP_Error(
+				'not-logged-in',
+				__( 'REST API requests must be authenticated.', 'all-in-one-intranet' ),
+				[ 'status' => 401 ]
+			);
 		}
 
-		return new WP_Error( 'not-authorized', 'You are not authorized to access this site because All-In-One Intranet is active', [ 'status' => 403 ] );
+		return new WP_Error(
+			'not-authorized',
+			__( 'You are not authorized to access this site.', 'all-in-one-intranet' ),
+			[ 'status' => 403 ]
+		);
 	}
 
 	/**
@@ -520,8 +540,9 @@ class core_all_in_one_intranet {
 	 * 'init' priority 1. admin-ajax.php defines DOING_AJAX before bootstrap so
 	 * wp_doing_ajax() is reliable here, and admin-post.php is identified via the
 	 * $pagenow global, matching the OPML gate. Login and role/membership parity
-	 * with the REST gate comes from aioi_is_access_allowed(): anonymous users are
-	 * sent to the login wall, logged-in users without access get a 403. The
+	 * with the REST gate comes from aioi_is_access_allowed(): logged-in users
+	 * without access get a 403, and anonymous users get a 401 on admin-ajax.php or
+	 * the login wall on admin-post.php - see below for why the two differ. The
 	 * authentication actions aioi_is_public_action() exempts stay reachable so
 	 * visitors can log in at all.
 	 */
@@ -555,6 +576,18 @@ class core_all_in_one_intranet {
 		}
 
 		if ( ! is_user_logged_in() ) {
+			// An XHR cannot use a login screen, and landing on one costs the visitor their
+			// password reset (see the /favicon.ico branch in aioi_template_redirect()).
+			// admin-post.php keeps the redirect, since a person may be waiting on it.
+			if ( wp_doing_ajax() ) {
+				wp_send_json_error(
+					[
+						'message' => __( 'AJAX requests must be authenticated.', 'all-in-one-intranet' ),
+					],
+					401
+				);
+			}
+
 			auth_redirect();
 			exit;
 		}
@@ -569,17 +602,15 @@ class core_all_in_one_intranet {
 	/**
 	 * Whether the request carries a 'page' variable.
 	 *
-	 * Reads $_GET and $_POST, not $_REQUEST: request_order can leave GET out of
-	 * $_REQUEST, while core's admin_init interceptors read $_GET directly, so a
-	 * 'page' in the query string beside an exempt 'action' in the body would slip
-	 * past a $_REQUEST-only check.
+	 * Core's admin_init interceptors read $_GET directly, so a 'page' in the
+	 * query string beside an exempt 'action' in the body must still count, which
+	 * is exactly how aioi_request_has_params() reads a request.
 	 *
 	 * @return bool
 	 */
 	protected function aioi_request_has_page_var() {
 
-		// phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended
-		return isset( $_GET['page'] ) || isset( $_POST['page'] );
+		return $this->aioi_request_has_params( [ 'page' ] );
 	}
 
 	/**
@@ -698,25 +729,233 @@ class core_all_in_one_intranet {
 	}
 
 	/**
+	 * The site-management platforms whose own API endpoints stay reachable while
+	 * the site is private, and the plugins that provide them.
+	 *
+	 * Kept apart from get_login_flow_plugins() because the reasoning is the
+	 * opposite: a login-flow entry must never return site content, while these
+	 * endpoints exist to return it. Each one verifies the platform's own API key or
+	 * request signature before answering, so the exemption hands authorization to
+	 * the connector rather than removing it.
+	 *
+	 * Most connectors need no entry at all. ManageWP Worker, MainWP Child and
+	 * InfiniteWP Client serve their dashboard from a root-URL POST that no gate
+	 * here touches, though not because they always run first. MainWP Child
+	 * dispatches at 'init' 9999, later than this plugin's 'init' 1 gates; what
+	 * spares them is the request's shape. The 'init'-1 gates scope themselves out
+	 * of a root POST (aioi_gate_admin_endpoints() wants admin-ajax/admin-post,
+	 * aioi_gate_opml() wants wp-links-opml.php), aioi_check_activity() bails on
+	 * their cookieless machine auth, and the connector answers and exits before
+	 * 'wp' / 'template_redirect' run. A future 'init'-1 gate not scoped to a
+	 * request shape like that could reach them even so. A platform needs listing
+	 * only where its traffic crosses a gate: over the REST API, where
+	 * aioi_rest_pre_dispatch() lands before the platform's own permission callback
+	 * can authorize the caller, or through admin-ajax.php, where the admin-endpoint
+	 * gate does the same.
+	 *
+	 * 'requires_credentials' stops an entry from becoming a blanket hole. The
+	 * routes open only for a request that presents the platform's credentials, so
+	 * an anonymous probe of the namespace still meets the login wall. The names are
+	 * matched against request headers and parameters both, since a one-click login
+	 * arrives from a browser and cannot set headers.
+	 *
+	 * @return array
+	 */
+	protected function get_management_plugins() {
+
+		return [
+			// WP Umbrella. One entry for the whole namespace rather than a route list:
+			// it registers roughly eighty routes and adds more with each release. Every
+			// one of them authorizes through its own permission callback, bar the
+			// pairing challenge, which HMACs a nonce the caller supplied with a token
+			// the caller already holds and reveals nothing about the site.
+			//
+			// The actions are its loopbacks. While answering an authorized call, it
+			// posts to its own admin-ajax.php to read single-plugin data, to drive an
+			// update fallback, and to refresh the update cache. Those posts carry a
+			// WordPress nonce and usually nothing else, so the nonce parameter being
+			// present is the precondition, and the handler verifies its value.
+			// See aioi_request_has_params() for why the value cannot be verified here,
+			// and for what the platform does before it checks.
+			[
+				'files'                => [ 'wp-health/wp-health.php' ],
+				'routes'               => [ '/wp-umbrella' ],
+				'requires_credentials' => [
+					'authorization',
+					'x-authorization',
+					'x-umbrella',
+					'x-secret-token',
+					'x-auth-token',
+					'x-umbrella-signature',
+					'x-umb-login-sig',
+				],
+				'actions'              => [
+					'wp_umbrella_plugin_data_single_admin_request',
+					'wp_umbrella_snapshot_data',
+					'wp_umbrella_update_admin_request',
+				],
+				'requires_params'      => [ 'nonce' ],
+			],
+
+			// WP Remote. Most of its dashboard calls answer from its own plugin file,
+			// before any gate here, but it routes some of them through admin-ajax.php
+			// as 'bvadm' and registers a wp_ajax_nopriv_ handler for them, which the
+			// admin-endpoint gate would otherwise turn away. It verifies the caller's
+			// signature before registering that handler and terminates the request when
+			// the check fails, so 'requires_handler' is all the precondition this needs.
+			[
+				'files'            => [ 'wpremote/plugin.php' ],
+				'actions'          => [ 'bvadm' ],
+				'requires_handler' => true,
+			],
+		];
+	}
+
+	/**
+	 * The admin-ajax.php actions WordPress itself registers for anonymous access.
+	 *
+	 * Only 'generate-password', which the reset-password screen fetches while the
+	 * visitor is still logged out, so gating it costs them the reset. Core's other
+	 * nopriv action, 'heartbeat', stays gated, since it dispatches filters a plugin
+	 * can attach site data to and nobody logged out needs it.
+	 *
+	 * @return array
+	 */
+	protected function get_core_public_actions() {
+
+		// get_public_actions() feeds admin-post.php too, where core registers no
+		// handler for this action.
+		if ( ! wp_doing_ajax() ) {
+			return [];
+		}
+
+		// Core has only registered the handler since 5.7; this plugin supports 5.5.
+		if ( version_compare( get_bloginfo( 'version' ), '5.7', '<' ) ) {
+			return [];
+		}
+
+		return [ 'generate-password' ];
+	}
+
+	/**
 	 * The admin-ajax.php / admin-post.php actions that stay reachable while the
 	 * site is private.
 	 *
-	 * The ones from an active plugin, plus whatever the `aioi_public_actions`
-	 * filter adds. See get_login_flow_plugins().
+	 * The ones WordPress registers for anonymous access, plus the ones from an
+	 * active plugin, plus whatever the `aioi_public_actions` filter adds. See
+	 * get_core_public_actions(), get_login_flow_plugins() and
+	 * get_management_plugins().
+	 *
+	 * The list is built per request, because an entry may require a handler to be
+	 * registered, or the request to carry named parameters, before its actions
+	 * count as public. Actions added through the filter never carry a
+	 * precondition.
 	 *
 	 * @return array
 	 */
 	protected function get_public_actions() {
 
-		$actions = [];
+		$actions = $this->get_core_public_actions();
+		$plugins = array_merge( $this->get_login_flow_plugins(), $this->get_management_plugins() );
 
-		foreach ( $this->get_login_flow_plugins() as $plugin ) {
-			if ( ! empty( $plugin['actions'] ) && $this->aioi_is_any_plugin_active( $plugin['files'] ) ) {
-				$actions = array_merge( $actions, $plugin['actions'] );
+		foreach ( $plugins as $plugin ) {
+			if ( empty( $plugin['actions'] ) || ! $this->aioi_is_any_plugin_active( $plugin['files'] ) ) {
+				continue;
+			}
+
+			if (
+				! empty( $plugin['requires_params'] ) &&
+				! $this->aioi_request_has_params( $plugin['requires_params'] )
+			) {
+				continue;
+			}
+
+			foreach ( $plugin['actions'] as $action ) {
+				if ( ! empty( $plugin['requires_handler'] ) && ! $this->aioi_action_has_handler( $action ) ) {
+					continue;
+				}
+
+				$actions[] = $action;
 			}
 		}
 
 		return (array) apply_filters( 'aioi_public_actions', $actions );
+	}
+
+	/**
+	 * Whether something has already claimed the dispatch hook for an action.
+	 *
+	 * The precondition behind a management platform's 'requires_handler' entry. A
+	 * connector that verifies its own signature while its plugin file loads only
+	 * registers its handler once that check passes, and terminates the request
+	 * outright when it fails - so a handler being in place by the time this gate
+	 * runs means the caller is already vouched for. A request that merely names the
+	 * action, with no credentials behind it, finds nothing registered and meets the
+	 * login wall as before.
+	 *
+	 * Both the nopriv and the logged-in hook count: the gate also turns away
+	 * logged-in users without a role or sub-site membership, and those requests
+	 * dispatch through the plain hook.
+	 *
+	 * @param string $action Action name, as WordPress builds its dispatch hook from.
+	 *
+	 * @return bool
+	 */
+	protected function aioi_action_has_handler( $action ) {
+
+		$prefixes = [ 'wp_ajax_nopriv_', 'wp_ajax_', 'admin_post_nopriv_', 'admin_post_' ];
+
+		foreach ( $prefixes as $prefix ) {
+			if ( has_action( $prefix . $action ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Whether the request carries any of the named parameters.
+	 *
+	 * The admin-endpoint counterpart of aioi_request_has_credentials(), and the
+	 * precondition behind a management platform's 'requires_params' entry. A
+	 * platform's loopback - the site posting to its own admin-ajax.php while it
+	 * answers an authorized call - carries a WordPress nonce that only code
+	 * running on the site can mint, and the receiving handler verifies it. This
+	 * looks at presence, never the value: the nonce is minted for the
+	 * administrator the platform acts as, and this gate runs while the loopback
+	 * is still anonymous, so verifying it here would turn away every legitimate
+	 * request. All the check needs to do is keep a request that does not even
+	 * claim a nonce from reaching the exempted actions.
+	 *
+	 * So this is a check on the shape of a request, not proof that anyone
+	 * authenticated it, and it is weaker than it looks where a platform does
+	 * privileged work before validating its own nonce. WP Umbrella logs an
+	 * administrator in and only then verifies, on two of its three handlers, so a
+	 * request naming those with any non-empty nonce reaches that setup before
+	 * being turned away. No site content is returned and nothing is written, and
+	 * the same handlers are reachable this way on any site that is not private at
+	 * all, but the exemption is what brings a private one into line with that
+	 * rather than keeping it stricter.
+	 *
+	 * Reads $_GET and $_POST, not $_REQUEST: request_order can leave GET out of
+	 * $_REQUEST, so a parameter in the query string beside the rest of the
+	 * request in the body would slip past a $_REQUEST-only check.
+	 *
+	 * @param array $names Parameter names to look for.
+	 *
+	 * @return bool
+	 */
+	protected function aioi_request_has_params( $names ) {
+
+		foreach ( (array) $names as $name ) {
+			// phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended
+			if ( isset( $_GET[ $name ] ) || isset( $_POST[ $name ] ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -725,25 +964,85 @@ class core_all_in_one_intranet {
 	 * The same as get_public_actions(), one transport over: some login plugins
 	 * verify the second factor over REST, registering the route with
 	 * `permission_callback => '__return_true'` and checking their own login
-	 * nonce, which the private-site 401 lands before.
+	 * nonce, which the private-site 401 lands before. Site-management platforms
+	 * that work through the REST API are collected here too; see
+	 * get_management_plugins().
 	 *
 	 * An entry matches the route exactly or as a path segment prefix, so a
 	 * sibling route such as `/ns/v1/verify-debug` cannot ride in on an entry for
 	 * `/ns/v1/verify`.
 	 *
+	 * The list is built per request, because an entry may require the request to
+	 * carry the platform's credentials before its routes count as public. Entries
+	 * added through the filter never carry that requirement.
+	 *
+	 * @param WP_REST_Request|null $request The request being dispatched.
+	 *
 	 * @return array
 	 */
-	protected function get_public_rest_routes() {
+	protected function get_public_rest_routes( $request = null ) {
 
-		$routes = [];
+		$routes  = [];
+		$plugins = array_merge( $this->get_login_flow_plugins(), $this->get_management_plugins() );
 
-		foreach ( $this->get_login_flow_plugins() as $plugin ) {
-			if ( ! empty( $plugin['routes'] ) && $this->aioi_is_any_plugin_active( $plugin['files'] ) ) {
-				$routes = array_merge( $routes, $plugin['routes'] );
+		foreach ( $plugins as $plugin ) {
+			if ( empty( $plugin['routes'] ) || ! $this->aioi_is_any_plugin_active( $plugin['files'] ) ) {
+				continue;
 			}
+
+			if (
+				! empty( $plugin['requires_credentials'] ) &&
+				! $this->aioi_request_has_credentials( $request, $plugin['requires_credentials'] )
+			) {
+				continue;
+			}
+
+			$routes = array_merge( $routes, $plugin['routes'] );
 		}
 
 		return (array) apply_filters( 'aioi_public_rest_routes', $routes );
+	}
+
+	/**
+	 * Whether the request presents any of the named credentials.
+	 *
+	 * Headers and parameters both: a platform's server-to-server calls carry their
+	 * token in a header, while a one-click login lands as a browser request that
+	 * can only carry it in the query string. This looks at presence, never the
+	 * value: proving the credential belongs to the site is the platform's own job,
+	 * and all this needs to do is keep a request with no credentials at all from
+	 * reaching the exempted routes.
+	 *
+	 * Fails closed on anything that is not a parsed REST request, matching
+	 * aioi_is_public_rest_route().
+	 *
+	 * @param mixed $request The request passed to 'rest_pre_dispatch'.
+	 * @param array $names   Header or parameter names to look for.
+	 *
+	 * @return bool
+	 */
+	protected function aioi_request_has_credentials( $request, $names ) {
+
+		if ( ! $request instanceof WP_REST_Request ) {
+			return false;
+		}
+
+		foreach ( (array) $names as $name ) {
+			if ( (string) $request->get_header( $name ) !== '' ) {
+				return true;
+			}
+
+			// A credential is a single string. An array-valued parameter under the same
+			// name is request noise, not a credential, and casting it would raise an
+			// array-to-string warning that any anonymous caller could trigger.
+			$param = $request->get_param( $name );
+
+			if ( is_scalar( $param ) && (string) $param !== '' ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -788,7 +1087,7 @@ class core_all_in_one_intranet {
 
 		$route = (string) $request->get_route();
 
-		foreach ( $this->get_public_rest_routes() as $allowed ) {
+		foreach ( $this->get_public_rest_routes( $request ) as $allowed ) {
 			$allowed = is_string( $allowed ) ? rtrim( $allowed, '/' ) : '';
 
 			// Skip anything that is not a route of its own: an entry of '/', or any run
@@ -856,51 +1155,6 @@ class core_all_in_one_intranet {
 
 	/**
 	 * AUTO-LOGOUT.
-	 * Reset timer on login.
-	 *
-	 * @param string $username
-	 * @param WP_User $user
-	 */
-	public function aioi_wp_login( $username, $user ) {
-
-		try {
-			if ( $user->ID ) {
-				update_user_meta( $user->ID, 'aioi_last_activity_time', time() );
-			}
-		} catch ( Exception $e ) {
-			// Do nothing.
-		}
-	}
-
-	/**
-	 * AUTO-LOGOUT.
-	 * Start the inactivity clock when WordPress sets up a login cookie.
-	 *
-	 * Companion to aioi_wp_login() for logins that never fire 'wp_login'. The
-	 * user ID comes from the action, since the current user is not set up yet.
-	 *
-	 * Every wp_set_auth_cookie() call fires this, which covers every
-	 * authentication event in core, and it runs ahead of the 'send_auth_cookies'
-	 * filter. So a plugin that suppresses the cookie for an unfinished login
-	 * still resets the clock, which is harmless: there is no session until the
-	 * second step issues a cookie and fires this again.
-	 *
-	 * @param string $logged_in_cookie The logged-in cookie value.
-	 * @param int    $expire           When the cookie expires as a UNIX timestamp.
-	 * @param int    $expiration       When the session expires as a UNIX timestamp.
-	 * @param int    $user_id          The user the cookie was issued for.
-	 */
-	public function aioi_set_logged_in_cookie( $logged_in_cookie, $expire, $expiration, $user_id ) {
-
-		$user_id = (int) $user_id;
-
-		if ( $user_id > 0 ) {
-			update_user_meta( $user_id, 'aioi_last_activity_time', time() );
-		}
-	}
-
-	/**
-	 * AUTO-LOGOUT.
 	 * Check whether the user should be auto-logged out this time.
 	 */
 	public function aioi_check_activity() {
@@ -909,8 +1163,53 @@ class core_all_in_one_intranet {
 			return;
 		}
 
-		$user_id            = get_current_user_id();
-		$last_activity_time = (int) get_user_meta( $user_id, 'aioi_last_activity_time', true );
+		$user_id = get_current_user_id();
+		$session = $this->aioi_get_current_session( $user_id );
+
+		// Nothing to expire when no session backs the request: the current user was
+		// set programmatically, which is how management, SSO and monitoring plugins
+		// act on a site with no browser involved. Logging that out would kill the
+		// request they are in the middle of, and bailing before the timestamp write
+		// below also stops their traffic from standing in for the person's own
+		// activity, which would hold the clock open for as long as they keep polling.
+		if ( ! is_array( $session ) ) {
+			return;
+		}
+
+		// Activity is stamped on the session itself, so each browser keeps its own
+		// idle clock: a login forgotten on a shared machine expires on schedule even
+		// while the same person keeps working from another one. The session's own
+		// start counts as activity too. A plugin that issues its login cookie from a
+		// must-use plugin does so before this plugin is loaded, so neither 'wp_login'
+		// nor 'set_logged_in_cookie' can start the clock, and a brand new session
+		// would otherwise be logged straight back out. Whichever timestamp is later
+		// wins, so a long-lived session is still expired on its own inactivity.
+		$timestamps = [];
+
+		if ( isset( $session['aioi_last_activity'] ) ) {
+			$timestamps[] = (int) $session['aioi_last_activity'];
+		}
+
+		if ( isset( $session['login'] ) ) {
+			$timestamps[] = (int) $session['login'];
+		}
+
+		// A session carrying neither timestamp comes from a custom session store
+		// that does not round-trip the keys WordPress and this plugin put there.
+		// With nothing to measure idleness against, expiring it would be a guess
+		// that logs real people out, so leave it alone.
+		if ( $timestamps === [] ) {
+			return;
+		}
+
+		// A session from before activity was tracked per session has no stamp yet.
+		// The retired user-wide timestamp is the best signal it left behind; the
+		// next allowed request stamps the session and this fallback goes unread.
+		if ( ! isset( $session['aioi_last_activity'] ) ) {
+			$timestamps[] = (int) get_user_meta( $user_id, 'aioi_last_activity_time', true );
+		}
+
+		$last_activity_time = max( $timestamps );
 		$logout_time_in_sec = $this->get_autologout_time_in_seconds();
 
 		if (
@@ -930,7 +1229,39 @@ class core_all_in_one_intranet {
 			exit;
 		}
 
-		update_user_meta( $user_id, 'aioi_last_activity_time', time() );
+		// Stamped even while auto-logout is switched off, so enabling it later
+		// measures from real activity instead of logging everyone out at once. The
+		// user-wide 'aioi_last_activity_time' meta is deliberately no longer
+		// written: refreshing it from any session would keep feeding the fallback
+		// above, and a user's other sessions would never expire.
+		$session['aioi_last_activity'] = time();
+
+		WP_Session_Tokens::get_instance( $user_id )->update( wp_get_session_token(), $session );
+	}
+
+	/**
+	 * AUTO-LOGOUT.
+	 * The WordPress session this request is authenticated by, if there is one.
+	 *
+	 * Null whenever the request carries no live session for the current user: no
+	 * logged-in cookie at all, an expired one, or one whose token belongs to
+	 * somebody else. Session tokens have backed every login cookie since WordPress
+	 * 4.0, so a browser session always has one, and WP_Session_Tokens drops expired
+	 * sessions before returning them.
+	 *
+	 * @param int $user_id The current user's ID.
+	 *
+	 * @return array|null Session data, including the 'login' timestamp it started at.
+	 */
+	protected function aioi_get_current_session( $user_id ) {
+
+		$token = wp_get_session_token();
+
+		if ( $token === '' ) {
+			return null;
+		}
+
+		return WP_Session_Tokens::get_instance( $user_id )->get( $token );
 	}
 
 	protected function get_autologout_time_in_seconds() {

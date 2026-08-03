@@ -5,7 +5,7 @@
  * Description:       Instantly turn WordPress into a private corporate intranet.
  * Requires at least: 5.5
  * Requires PHP:      7.0
- * Version:           1.9.2
+ * Version:           1.10.0
  * Author:            WP-Glogin
  * Author URI:        https://wp-glogin.com/
  * License:           GPL-3.0-or-later
@@ -38,7 +38,7 @@ if ( ! class_exists( 'core_all_in_one_intranet' ) ) {
 
 class aioi_basic_all_in_one_intranet extends core_all_in_one_intranet {
 
-	public $PLUGIN_VERSION = '1.9.2';
+	public $PLUGIN_VERSION = '1.10.0';
 
 	// Singleton.
 	private static $instance = null;
